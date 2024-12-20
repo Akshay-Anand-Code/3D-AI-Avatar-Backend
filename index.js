@@ -37,22 +37,22 @@ const execCommand = (command) => {
   });
 };
 
-const lipSyncMessage = async (message) => {
+const lipSyncMessage = async (messageId) => {
   const time = new Date().getTime();
-  console.log(`Starting conversion for message ${message}`);
+  console.log(`Starting conversion for message ${messageId}`);
   await execCommand(
-    `ffmpeg -y -i audios/message_${message}.mp3 audios/message_${message}.wav`
-    // -y to overwrite the file
+    `ffmpeg -y -i audios/message_${messageId}.mp3 audios/message_${messageId}.wav`
   );
   console.log(`Conversion done in ${new Date().getTime() - time}ms`);
   await execCommand(
-    `./bin/rhubarb -f json -o audios/message_${message}.json audios/message_${message}.wav -r phonetic`
+    `./bin/rhubarb -f json -o audios/message_${messageId}.json audios/message_${messageId}.wav -r phonetic`
   );
-  // -r phonetic is faster but less accurate
   console.log(`Lip sync done in ${new Date().getTime() - time}ms`);
 };
 
 app.post("/chat", async (req, res) => {
+  const requestId = Date.now();
+  
   const userMessage = req.body.message;
   if (!userMessage) {
     res.send({
@@ -127,14 +127,22 @@ app.post("/chat", async (req, res) => {
   }
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
-    // generate audio file
-    const fileName = `audios/message_${i}.mp3`; // The name of your audio file
-    const textInput = message.text; // The text you wish to convert to speech
+    const fileName = `audios/message_${requestId}_${i}.mp3`;
+    const textInput = message.text;
     await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, textInput);
-    // generate lipsync
-    await lipSyncMessage(i);
+    await lipSyncMessage(`${requestId}_${i}`);
     message.audio = await audioFileToBase64(fileName);
-    message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
+    message.lipsync = await readJsonTranscript(`audios/message_${requestId}_${i}.json`);
+    
+    setTimeout(async () => {
+      try {
+        await fs.unlink(fileName);
+        await fs.unlink(`audios/message_${requestId}_${i}.wav`);
+        await fs.unlink(`audios/message_${requestId}_${i}.json`);
+      } catch (err) {
+        console.error('Error cleaning up files:', err);
+      }
+    }, 1000);
   }
 
   res.send({ messages });

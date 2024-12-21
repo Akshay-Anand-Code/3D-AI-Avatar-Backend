@@ -18,7 +18,7 @@ const voiceID = "21m00Tcm4TlvDq8ikWAM";
 const app = express();
 app.use(express.json());
 app.use(cors());
-const port = 3000;
+const port = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
   res.send("Hello World!");
@@ -37,22 +37,22 @@ const execCommand = (command) => {
   });
 };
 
-const lipSyncMessage = async (messageId) => {
+const lipSyncMessage = async (message) => {
   const time = new Date().getTime();
-  console.log(`Starting conversion for message ${messageId}`);
+  console.log(`Starting conversion for message ${message}`);
   await execCommand(
-    `ffmpeg -y -i audios/message_${messageId}.mp3 audios/message_${messageId}.wav`
+    `ffmpeg -y -i audios/message_${message}.mp3 audios/message_${message}.wav`
+    // -y to overwrite the file
   );
   console.log(`Conversion done in ${new Date().getTime() - time}ms`);
   await execCommand(
-    `./bin/rhubarb -f json -o audios/message_${messageId}.json audios/message_${messageId}.wav -r phonetic`
+    `./bin/rhubarb -f json -o audios/message_${message}.json audios/message_${message}.wav -r phonetic`
   );
+  // -r phonetic is faster but less accurate
   console.log(`Lip sync done in ${new Date().getTime() - time}ms`);
 };
 
 app.post("/chat", async (req, res) => {
-  const requestId = Date.now();
-  
   const userMessage = req.body.message;
   if (!userMessage) {
     res.send({
@@ -127,22 +127,14 @@ app.post("/chat", async (req, res) => {
   }
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
-    const fileName = `audios/message_${requestId}_${i}.mp3`;
-    const textInput = message.text;
+    // generate audio file
+    const fileName = `audios/message_${i}.mp3`; // The name of your audio file
+    const textInput = message.text; // The text you wish to convert to speech
     await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, textInput);
-    await lipSyncMessage(`${requestId}_${i}`);
+    // generate lipsync
+    await lipSyncMessage(i);
     message.audio = await audioFileToBase64(fileName);
-    message.lipsync = await readJsonTranscript(`audios/message_${requestId}_${i}.json`);
-    
-    setTimeout(async () => {
-      try {
-        await fs.unlink(fileName);
-        await fs.unlink(`audios/message_${requestId}_${i}.wav`);
-        await fs.unlink(`audios/message_${requestId}_${i}.json`);
-      } catch (err) {
-        console.error('Error cleaning up files:', err);
-      }
-    }, 1000);
+    message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
   }
 
   res.send({ messages });
@@ -157,6 +149,12 @@ const audioFileToBase64 = async (file) => {
   const data = await fs.readFile(file);
   return data.toString("base64");
 };
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: 'Something broke!' });
+});
 
 app.listen(port, () => {
   console.log(`Virtual Girlfriend listening on port ${port}`);

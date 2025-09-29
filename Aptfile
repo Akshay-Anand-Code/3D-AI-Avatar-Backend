@@ -1,1 +1,4 @@
 ffmpeg
+pulseaudio
+libpulse0
+libpulse-mainloop-glib0

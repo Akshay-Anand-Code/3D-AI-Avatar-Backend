@@ -5,6 +5,7 @@ import voice from "elevenlabs-node";
 import express from "express";
 import { promises as fs } from "fs";
 import OpenAI from "openai";
+import { classifyEmotionGesture, withSafeDefaults } from "./classifier.js";
 dotenv.config();
 
 const openai = new OpenAI({
@@ -22,7 +23,7 @@ app.use(express.json());
 app.use(cors({
   origin: [
     'https://3d-avatar-zeta.vercel.app',
-    'http://localhost:3000',
+    'http://localhost:5173',
     'http://localhost:3001',
     'http://127.0.0.1:3000',
     'http://127.0.0.1:3001'
@@ -84,6 +85,9 @@ app.post("/chat", async (req, res) => {
           audio: await audioFileToBase64("audios/intro_0.wav"),
           lipsync: await readJsonTranscript("audios/intro_0.json"),
           facialExpression: "smile",
+          gesture: "delight",
+          intensity: 0.6,
+          tempo: 0.55,
           animation: "Talking_1",
         },
         {
@@ -91,6 +95,9 @@ app.post("/chat", async (req, res) => {
           audio: await audioFileToBase64("audios/intro_1.wav"),
           lipsync: await readJsonTranscript("audios/intro_1.json"),
           facialExpression: "sad",
+          gesture: "shrug",
+          intensity: 0.5,
+          tempo: 0.5,
           animation: "Crying",
         },
       ],
@@ -105,6 +112,9 @@ app.post("/chat", async (req, res) => {
           audio: await audioFileToBase64("audios/api_0.wav"),
           lipsync: await readJsonTranscript("audios/api_0.json"),
           facialExpression: "angry",
+          gesture: "disagree",
+          intensity: 0.6,
+          tempo: 0.55,
           animation: "Angry",
         },
         {
@@ -112,6 +122,9 @@ app.post("/chat", async (req, res) => {
           audio: await audioFileToBase64("audios/api_1.wav"),
           lipsync: await readJsonTranscript("audios/api_1.json"),
           facialExpression: "smile",
+          gesture: "delight",
+          intensity: 0.6,
+          tempo: 0.55,
           animation: "Laughing",
         },
       ],
@@ -143,20 +156,60 @@ app.post("/chat", async (req, res) => {
       },
     ],
   });
-  let messages = JSON.parse(completion.choices[0].message.content);
-  if (messages.messages) {
-    messages = messages.messages; // ChatGPT is not 100% reliable, sometimes it directly returns an array and sometimes a JSON object with a messages property
+  let messages;
+  try {
+    messages = JSON.parse(completion.choices[0].message.content);
+    if (messages.messages) {
+      messages = messages.messages; // ChatGPT is not 100% reliable, sometimes it directly returns an array and sometimes a JSON object with a messages property
+    }
+    if (!Array.isArray(messages)) {
+      throw new Error("Unexpected messages format");
+    }
+  } catch (e) {
+    // Fallback: treat the LLM reply as plain text
+    const fallbackText = completion?.choices?.[0]?.message?.content || "";
+    const cls = withSafeDefaults(classifyEmotionGesture(fallbackText));
+    res.send({
+      messages: [
+        {
+          text: fallbackText,
+          facialExpression: cls.facialExpression,
+          gesture: cls.gesture,
+          intensity: cls.intensity,
+          tempo: cls.tempo,
+        },
+      ],
+    });
+    return;
   }
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
-    // generate audio file
-    const fileName = `audios/message_${i}.mp3`; // The name of your audio file
-    const textInput = message.text; // The text you wish to convert to speech
-    await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, textInput);
-    // generate lipsync
-    await lipSyncMessage(i);
-    message.audio = await audioFileToBase64(fileName);
-    message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
+    // generate audio + lipsync with graceful fallback
+    const fileName = `audios/message_${i}.mp3`;
+    const textInput = message.text || "";
+    try {
+      await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, textInput);
+      await lipSyncMessage(i);
+      message.audio = await audioFileToBase64(fileName);
+      message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
+    } catch (err) {
+      console.error("TTS/Lipsync failed for message", i, err?.message || err);
+      // Keep message valid without audio/lipsync
+    }
+    // classify and attach animation controls (non-breaking extension)
+    try {
+      const cls = withSafeDefaults(classifyEmotionGesture(textInput));
+      message.facialExpression = message.facialExpression || cls.facialExpression;
+      message.gesture = cls.gesture;
+      message.intensity = cls.intensity;
+      message.tempo = cls.tempo;
+    } catch (_) {
+      const safe = withSafeDefaults();
+      message.facialExpression = message.facialExpression || safe.facialExpression;
+      message.gesture = safe.gesture;
+      message.intensity = safe.intensity;
+      message.tempo = safe.tempo;
+    }
   }
 
   res.send({ messages });
